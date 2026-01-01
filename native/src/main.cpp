@@ -65,7 +65,7 @@ extern "C" {
                 log_debug("[Job] Starting download for lat=" + std::to_string(lat) + " lon=" + std::to_string(lon));
                 
                 TileDownloader downloader(apiKeyStr);
-                auto tiles = downloader.downloadTiles(lat, lon, radius);
+                auto tiles = downloader.downloadTiles(lat, lon, 0, radius);
                 log_debug("[Job] Downloaded " + std::to_string(tiles.size()) + " tiles");
 
                 Voxelizer voxelizer;

@@ -14,7 +14,7 @@ public:
     TileDownloader(const std::string& apiKey, const std::string& cacheDir = "");
     
     // Downloads tiles intersecting the region
-    std::vector<TileData> downloadTiles(double lat, double lon, double radius);
+    std::vector<TileData> downloadTiles(double lat, double lon, double elevation, double radius);
     
     std::vector<unsigned char> fetchUrlPublic(const std::string& url);
 

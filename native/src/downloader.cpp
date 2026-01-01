@@ -494,11 +494,11 @@ std::pair<std::vector<unsigned char>, std::string> TileDownloader::fetchUrl(
 
 std::vector<TileData> TileDownloader::downloadTiles(double lat,
                                                     double lon,
+                                                    double elevation,
                                                     double radius) {
     std::vector<TileData> results;
 
     // 1. Get Elevation (skip for now)
-    double elevation = 0.0;
 
     // 2. Compute search sphere
     Vector3 center = cartesianFromDegrees(lon, lat, elevation);
