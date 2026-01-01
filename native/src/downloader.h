@@ -1,7 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <functional>
+#include <mutex>
 
 struct TileData {
     std::string url;
@@ -11,7 +11,7 @@ struct TileData {
 
 class TileDownloader {
 public:
-    TileDownloader(const std::string& apiKey);
+    TileDownloader(const std::string& apiKey, const std::string& cacheDir = "");
     
     // Downloads tiles intersecting the region
     std::vector<TileData> downloadTiles(double lat, double lon, double radius);
@@ -20,7 +20,10 @@ public:
 
 private:
     std::string apiKey;
+    std::string cacheDir;
+    static std::mutex cacheMutex;
     
     // Helper to fetch a URL, returns (data, content-type)
     std::pair<std::vector<unsigned char>, std::string> fetchUrl(const std::string& url);
+    std::pair<std::vector<unsigned char>, std::string> fetchUrlNonCached(const std::string& url);
 };

@@ -1,11 +1,15 @@
 #include "downloader.h"
 #include <nlohmann/json.hpp>
 #include <iostream>
-#include <queue>
 #include <cmath>
-#include <algorithm>
 #include <string>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <mutex>
+
+std::mutex TileDownloader::cacheMutex;
 
 #ifdef _WIN32
 #include <windows.h>
@@ -112,14 +116,24 @@ static void adoptSessionFromUrl(const std::string& url, std::string& session) {
 
 // --- HTTP Helper ---
 
-TileDownloader::TileDownloader(const std::string& apiKey) : apiKey(apiKey) {}
+TileDownloader::TileDownloader(const std::string &apiKey, const std::string &cacheDir) :
+		apiKey(apiKey), cacheDir{cacheDir}
+{
+}
 
 #include "debug_log.h"
+
+// CURL write callback function
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::vector<unsigned char>* buffer) {
+    size_t totalSize = size * nmemb;
+    buffer->insert(buffer->end(), (unsigned char*)contents, (unsigned char*)contents + totalSize);
+    return totalSize;
+}
 
 // ...
 
 std::pair<std::vector<unsigned char>, std::string>
-TileDownloader::fetchUrl(const std::string& url) {
+TileDownloader::fetchUrlNonCached(const std::string& url) {
     std::vector<unsigned char> buffer;
     std::string contentType;
     log_debug("[Downloader] Fetching URL: " + url);
@@ -421,6 +435,61 @@ void parseNode(const json& node,
             }
         }
     }
+}
+
+std::pair<std::vector<unsigned char>, std::string> TileDownloader::fetchUrl(
+		const std::string &url)
+{
+	// Thread‑safe cache access
+	std::string cacheFile;
+	std::string typeFile;
+	if (!cacheDir.empty()) {
+		std::lock_guard<std::mutex> lock(cacheMutex);
+
+		// Ensure the cache directory exists
+		std::filesystem::create_directories(cacheDir);
+
+		// Create a deterministic cache filename from the URL (hash based)
+		std::hash<std::string> hasher;
+		size_t hashValue = hasher(url);
+		cacheFile = cacheDir + "/" + std::to_string(hashValue) + ".bin";
+		typeFile = cacheDir + "/" + std::to_string(hashValue) + ".type";
+
+		// Try to load from cache
+		if (std::filesystem::exists(cacheFile)) {
+			std::vector<unsigned char> data;
+			std::ifstream in(cacheFile, std::ios::binary);
+			if (in) {
+				in.unsetf(std::ios::skipws);
+				std::streampos fileSize;
+				in.seekg(0, std::ios::end);
+				fileSize = in.tellg();
+				in.seekg(0, std::ios::beg);
+				data.reserve(static_cast<size_t>(fileSize));
+				data.insert(data.begin(), std::istream_iterator<unsigned char>(in),
+						std::istream_iterator<unsigned char>());
+			}
+			std::string contentType;
+			if (std::filesystem::exists(typeFile)) {
+				std::ifstream ct(typeFile);
+				std::getline(ct, contentType);
+			}
+			return {data, contentType};
+		}
+	}
+	// Not cached – fetch from network
+	auto [data, contentType] = fetchUrlNonCached(url);
+
+	// Store result in cache for future calls
+	if (!data.empty() && !cacheFile.empty()) {
+		std::ofstream out(cacheFile, std::ios::binary);
+		out.write(reinterpret_cast<const char *>(data.data()), data.size());
+
+		std::ofstream ct(typeFile);
+		ct << contentType;
+	}
+
+	return {data, contentType};
 }
 
 std::vector<TileData> TileDownloader::downloadTiles(double lat,
