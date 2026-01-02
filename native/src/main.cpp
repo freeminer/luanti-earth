@@ -1,6 +1,7 @@
 #include <iostream>
 #include <thread>
 #include <atomic>
+#include <cmath>
 #include <mutex>
 #include <map>
 #include <vector>

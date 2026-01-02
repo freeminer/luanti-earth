@@ -23,7 +23,7 @@ include(FetchContent)
 FetchContent_Declare(
   tinygltf
   GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
-  GIT_TAG        v2.9.0
+  GIT_TAG        v2.9.7
 )
 FetchContent_MakeAvailable(tinygltf)
 
@@ -31,17 +31,19 @@ FetchContent_MakeAvailable(tinygltf)
 FetchContent_Declare(
   draco
   GIT_REPOSITORY https://github.com/google/draco.git
-  GIT_TAG        1.5.6
+  GIT_TAG        1.5.7
 )
 FetchContent_MakeAvailable(draco)
 
 # nlohmann_json
+if (NOT HAVE_NLOHMANN_JSON)
 FetchContent_Declare(
   json
   GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG        v3.11.2
+  GIT_TAG        v3.12.0
 )
 FetchContent_MakeAvailable(json)
+endif()
 
 # Source files
 file(GLOB SOURCES "src/*.cpp")
