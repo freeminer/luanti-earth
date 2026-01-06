@@ -450,8 +450,27 @@ std::pair<std::vector<unsigned char>, std::string> TileDownloader::fetchUrl(
 		std::filesystem::create_directories(cacheDir);
 
 		// Create a deterministic cache filename from the URL (hash based)
+		// Strip key and session parameters from URL for caching
+		std::string cacheUrl = url;
+		auto stripParam = [&](const std::string& name) {
+			std::string::size_type pos = cacheUrl.find(name + "=");
+			while (pos != std::string::npos) {
+				std::string::size_type end = cacheUrl.find('&', pos);
+				if (end == std::string::npos) {
+					cacheUrl.erase(pos);
+				} else {
+					cacheUrl.erase(pos, end - pos + 1);
+				}
+				if (!cacheUrl.empty() && (cacheUrl.back() == '?' || cacheUrl.back() == '&')) {
+					cacheUrl.pop_back();
+				}
+				pos = cacheUrl.find(name + "=");
+			}
+		};
+		stripParam("key");
+		stripParam("session");
 		std::hash<std::string> hasher;
-		size_t hashValue = hasher(url);
+		size_t hashValue = hasher(cacheUrl);
 		cacheFile = cacheDir + "/" + std::to_string(hashValue) + ".bin";
 		typeFile = cacheDir + "/" + std::to_string(hashValue) + ".type";
 
