@@ -27,6 +27,12 @@ struct Vector3 {
     double x, y, z;
 };
 
+std::ostream &operator<<(std::ostream &s, const Vector3 &p)
+{
+	s << "(" << p.x << "," << p.y << "," << p.z << ")";
+	return s;
+}
+
 struct Sphere {
     Vector3 center;
     double radius;

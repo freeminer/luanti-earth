@@ -17,6 +17,16 @@ struct Vec2 { double u, v; };
 Vec3 operator+(const Vec3& a, const Vec3& b) { return {a.x+b.x, a.y+b.y, a.z+b.z}; }
 Vec3 operator-(const Vec3& a, const Vec3& b) { return {a.x-b.x, a.y-b.y, a.z-b.z}; }
 Vec3 operator*(const Vec3& a, double s) { return {a.x*s, a.y*s, a.z*s}; }
+Vec3 operator/(const Vec3 &a, double s)
+{
+	return {a.x / s, a.y / s, a.z / s};
+}
+
+std::ostream &operator<<(std::ostream &s, const Vec3 &p)
+{
+	s << "(" << p.x << "," << p.y << "," << p.z << ")";
+	return s;
+}
 
 // --- Voxelizer Implementation ---
 
@@ -24,14 +34,17 @@ Vec3 operator*(const Vec3& a, double s) { return {a.x*s, a.y*s, a.z*s}; }
 
 // ...
 
-VoxelGrid Voxelizer::voxelize(const std::vector<unsigned char>& glbData, int resolution, double originX, double originY, double originZ) {
-    VoxelGrid grid;
-    tinygltf::Model model;
+VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double originX,
+		double originY, double originZ)
+{
+	VoxelGrid grid;
+	tinygltf::Model model;
     tinygltf::TinyGLTF loader;
     std::string err, warn;
 
+	const auto &glbData = tile.data;
     log_debug("[Voxelizer] Loading GLB (" + std::to_string(glbData.size()) + " bytes)");
-    bool ret = loader.LoadBinaryFromMemory(&model, &err, &warn, glbData.data(), glbData.size());
+	bool ret = loader.LoadBinaryFromMemory(&model, &err, &warn,
 
     if (!warn.empty()) log_debug("[Voxelizer] TinyGLTF Warn: " + warn);
     if (!err.empty()) log_debug("[Voxelizer] TinyGLTF Err: " + err);
@@ -139,6 +152,13 @@ VoxelGrid Voxelizer::voxelize(const std::vector<unsigned char>& glbData, int res
         }
     }
 
+	Vec3 box_center{0, 0, 0};
+	double box_size = 0;
+	if (!tile.box.empty()) {
+		box_center = {tile.box[0], tile.box[1], tile.box[2]};
+		box_size = tile.box[11] * 2; // max?
+    }
+
     // 2. Use Provided Origin (Global Origin)
     Vec3 center = { originX, originY, originZ };
 
@@ -170,7 +190,7 @@ VoxelGrid Voxelizer::voxelize(const std::vector<unsigned char>& glbData, int res
     double qz = axis.z * invs;
     double qw = s * 0.5;
 
-    auto rotate = [&](Vec3 v) -> Vec3 {
+    auto rotate = [&](Vec3 v, Vec3 center = {0,0,0}) -> Vec3 {
         // v - center
         double vx = v.x - center.x;
         double vy = v.y - center.y;
@@ -189,11 +209,21 @@ VoxelGrid Voxelizer::voxelize(const std::vector<unsigned char>& glbData, int res
         };
     };
 
+	Vec3 rotated_tile_box_center{0, 0, 0};
+	if (!tile.box.empty())
+	{
+		const Vec3 tile_box_center = {tile.box[0], tile.box[1], tile.box[2]};
+		rotated_tile_box_center = rotate(tile_box_center, center);
+	}
+	const auto rotated_half_center = rotated_tile_box_center / 2;
     // Transform all triangles
     for (auto& t : triangles) {
         t.v0 = rotate(t.v0);
         t.v1 = rotate(t.v1);
         t.v2 = rotate(t.v2);
+        t.v0 = t.v0 + rotated_tile_box_center;
+		t.v1 = t.v1 + rotated_tile_box_center;
+		t.v2 = t.v2 + rotated_tile_box_center;
     }
 
     // Recompute BBox after rotation
@@ -239,11 +269,17 @@ VoxelGrid Voxelizer::voxelize(const std::vector<unsigned char>& glbData, int res
         int minY = std::max(0, (int)((tMinY - min.y) / voxelSize));
         int maxY = std::min(ny-1, (int)((tMaxY - min.y) / voxelSize));
         int minZ = std::max(0, (int)((tMinZ - min.z) / voxelSize));
-        int maxZ = std::min(nz-1, (int)((tMaxZ - min.z) / voxelSize));
 
-        for (int z = minZ; z <= maxZ; z++) {
-            for (int y = minY; y <= maxY; y++) {
-                for (int x = minX; x <= maxX; x++) {
+				int minX = tMinX;
+				int maxX = tMaxX;
+				int minY = tMinY;
+				int maxY = tMaxY;
+				int minZ = tMinZ;
+				int maxZ = tMaxZ;
+				int voxelSizeInt = std::max(1, int(voxelSize));
+				for (int z = minZ; z <= maxZ; z+=voxelSizeInt) {
+					for (int y = minY; y <= maxY; y+=voxelSizeInt) {
+						for (int x = minX; x <= maxX; x+=voxelSizeInt) {
                     // Check intersection
                     // Simplified: just check if triangle is close to voxel center
                     // Or use a proper AABB-Tri test.

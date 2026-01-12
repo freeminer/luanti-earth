@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
-#include <string>
+
+struct TileData;
 
 struct Voxel {
     int x, y, z;
@@ -12,7 +13,8 @@ struct VoxelGrid {
     // Add bounds, scale, etc.
 };
 
+
 class Voxelizer {
 public:
-    VoxelGrid voxelize(const std::vector<unsigned char>& glbData, int resolution, double originX, double originY, double originZ);
+    VoxelGrid voxelize(const TileData& tile, int resolution, double originX, double originY, double originZ);
 };
