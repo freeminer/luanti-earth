@@ -130,7 +130,7 @@ TileDownloader::TileDownloader(const std::string &apiKey, const std::string &cac
 #include "debug_log.h"
 
 // CURL write callback function
-static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::vector<unsigned char>* buffer) {
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* buffer) {
     size_t totalSize = size * nmemb;
     buffer->insert(buffer->end(), (unsigned char*)contents, (unsigned char*)contents + totalSize);
     return totalSize;
@@ -138,9 +138,9 @@ static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::vect
 
 // ...
 
-std::pair<std::vector<unsigned char>, std::string>
+std::pair<std::string, std::string>
 TileDownloader::fetchUrlNonCached(const std::string& url) {
-    std::vector<unsigned char> buffer;
+    std::string buffer;
     std::string contentType;
     log_debug("[Downloader] Fetching URL: " + url);
 
@@ -278,7 +278,7 @@ TileDownloader::fetchUrlNonCached(const std::string& url) {
     return { buffer, contentType };
 }
 
-std::vector<unsigned char> TileDownloader::fetchUrlPublic(const std::string& url) {
+std::string TileDownloader::fetchUrlPublic(const std::string& url) {
     return fetchUrl(url).first; // Return just the data, not content-type
 }
 
@@ -289,8 +289,9 @@ void parseNode(const json& node,
                const std::string& baseURL,
                std::string& session,
                const std::string& apiKey,
-               std::vector<std::string>& glbUrls,
+               std::vector<TileData>& glbUrls,
                TileDownloader* downloader) {
+    TileData result;
 
     static int nodeCount = 0;
     nodeCount++;
@@ -304,6 +305,7 @@ void parseNode(const json& node,
     if (node.contains("boundingVolume") &&
         node["boundingVolume"].contains("box")) {
         std::vector<double> box = node["boundingVolume"]["box"].get<std::vector<double>>();
+        result.box = box;
         Sphere sphere = obbToSphere(box);
         if (regionSphere.intersects(sphere)) intersects = true;
     } else {
@@ -324,6 +326,13 @@ void parseNode(const json& node,
         return;
     }
 
+    bool allow_return = false;
+    if (node.contains("geometricError")) {
+        result.geometricError =  node["geometricError"].get<double>();
+       const int ge_int = int(result.geometricError);
+       if (ge_int == 2) allow_return = true;
+    } else {
+    }
     // Leaf or content
     std::vector<json> contents;
     if (node.contains("content"))
@@ -346,7 +355,7 @@ void parseNode(const json& node,
             // Absolute path - need to extract scheme + host from baseURL
             size_t schemeEnd = baseURL.find("://");
             if (schemeEnd != std::string::npos) {
-                size_t hostEnd = baseURL.find("/", schemeEnd + 3);
+                size_t hostEnd = baseURL.find('/', schemeEnd + 3);
                 if (hostEnd != std::string::npos) {
                     fullUrl = baseURL.substr(0, hostEnd) + uri;
                 } else {
@@ -357,7 +366,7 @@ void parseNode(const json& node,
             }
         } else {
             // Relative path
-            size_t lastSlash = baseURL.find_last_of("/");
+            size_t lastSlash = baseURL.find_last_of('/');
             if (lastSlash != std::string::npos) {
                 fullUrl = baseURL.substr(0, lastSlash + 1) + uri;
             } else {
@@ -382,9 +391,11 @@ void parseNode(const json& node,
 
         std::cout << "Full URL: " << fullUrl << std::endl;
 
+        result.url = fullUrl;
+
         if (fullUrl.find(".glb") != std::string::npos) {
             std::cout << "  -> Found GLB!" << std::endl;
-            glbUrls.push_back(fullUrl);
+            glbUrls.emplace_back(result);
         } else if (fullUrl.find(".json") != std::string::npos) {
             std::cout << "  -> Found JSON, recursing..." << std::endl;
             auto data = downloader->fetchUrlPublic(fullUrl);
@@ -407,12 +418,14 @@ void parseNode(const json& node,
                                   session, apiKey, glbUrls, downloader);
                     } else {
                         std::cout << "  -> Empty JSON, treating as GLB" << std::endl;
-                        glbUrls.push_back(fullUrl);
+                        if (allow_return)
+                        glbUrls.emplace_back(result);
                     }
                 } catch (...) {
                     // If it's not valid JSON, treat it as a GLB
                     std::cout << "  -> JSON parse failed, treating as GLB" << std::endl;
-                    glbUrls.push_back(fullUrl);
+                    if (allow_return)
+                    glbUrls.emplace_back(result);
                 }
             }
         } else {
@@ -432,18 +445,20 @@ void parseNode(const json& node,
                                   session, apiKey, glbUrls, downloader);
                     } else {
                         std::cout << "    -> Empty JSON, treating as GLB" << std::endl;
-                        glbUrls.push_back(fullUrl);
+                        if (allow_return)
+                        glbUrls.emplace_back(result);
                     }
                 } catch (...) {
                     std::cout << "    -> JSON parse failed, treating as GLB" << std::endl;
-                    glbUrls.push_back(fullUrl);
+                    if (allow_return)
+                    glbUrls.emplace_back(result);
                 }
             }
         }
     }
 }
 
-std::pair<std::vector<unsigned char>, std::string> TileDownloader::fetchUrl(
+std::pair<std::string, std::string> TileDownloader::fetchUrl(
 		const std::string &url)
 {
 	// Thread‑safe cache access
@@ -482,7 +497,7 @@ std::pair<std::vector<unsigned char>, std::string> TileDownloader::fetchUrl(
 
 		// Try to load from cache
 		if (std::filesystem::exists(cacheFile)) {
-			std::vector<unsigned char> data;
+			std::string data;
 			std::ifstream in(cacheFile, std::ios::binary);
 			if (in) {
 				in.unsetf(std::ios::skipws);
@@ -532,7 +547,7 @@ std::vector<TileData> TileDownloader::downloadTiles(double lat,
     // 3. Traverse
     std::string rootUrl = "https://tile.googleapis.com/v1/3dtiles/root.json?key=" + apiKey;
     std::string session;
-    std::vector<std::string> glbUrls;
+    std::vector<TileData> glbUrls;
 
     auto [rootBytes, rootContentType] = fetchUrl(rootUrl);
     if (rootBytes.empty()) return results;
@@ -561,9 +576,11 @@ std::vector<TileData> TileDownloader::downloadTiles(double lat,
     // 4. Download GLBs
     std::cout << "Found " << glbUrls.size() << " GLB URLs" << std::endl;
     for (const auto& url : glbUrls) {
-        auto [data, contentType] = fetchUrl(url);
+        auto [data, contentType] = fetchUrl(url.url);
         if (!data.empty()) {
-            results.push_back(TileData{ url, data });
+            auto uurl= url;
+            uurl.data=data;
+            results.push_back(uurl);
         }
     }
 

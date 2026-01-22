@@ -77,7 +77,7 @@ extern "C" {
 
                 for (size_t i = 0; i < tiles.size(); ++i) {
                     const auto& tile = tiles[i];
-                    VoxelGrid grid = voxelizer.voxelize(tile.data, resolution, origin.x, origin.y, origin.z);
+                    VoxelGrid grid = voxelizer.voxelize(tile, resolution, origin.x, origin.y, origin.z);
                     
                     for (const auto& v : grid.voxels) {
                         // Append x, y, z (int32 little endian)

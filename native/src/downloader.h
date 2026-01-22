@@ -5,7 +5,9 @@
 
 struct TileData {
     std::string url;
-    std::vector<unsigned char> data;
+    std::string data;
+    std::vector<double> box;
+    double geometricError;
     // Add metadata like translation, etc.
 };
 
@@ -16,7 +18,7 @@ public:
     // Downloads tiles intersecting the region
     std::vector<TileData> downloadTiles(double lat, double lon, double elevation, double radius);
     
-    std::vector<unsigned char> fetchUrlPublic(const std::string& url);
+    std::string fetchUrlPublic(const std::string& url);
 
 private:
     std::string apiKey;
@@ -24,6 +26,6 @@ private:
     static std::mutex cacheMutex;
     
     // Helper to fetch a URL, returns (data, content-type)
-    std::pair<std::vector<unsigned char>, std::string> fetchUrl(const std::string& url);
-    std::pair<std::vector<unsigned char>, std::string> fetchUrlNonCached(const std::string& url);
+    std::pair<std::string, std::string> fetchUrl(const std::string& url);
+    std::pair<std::string, std::string> fetchUrlNonCached(const std::string& url);
 };
