@@ -316,7 +316,7 @@ if (0)
 			unsigned char r = 100, g = 100, b = 100, a = 100;
 
 			if (static int i = 0; !((++i)%1000))
-			DUMP(t);
+			//DUMP(t);
 			grid.voxels.push_back({static_cast<int>(t.x), static_cast<int>(t.y),
 					static_cast<int>(t.z), r, g, b, a});
 		}
@@ -417,7 +417,7 @@ if (0)
 								}
 							}
 			if (static int i = 0; !((++i)%10000))
-			DUMP(x, y, z, r, g, b, a);
+			//DUMP(x, y, z, r, g, b, a);
 
 							//if (have)
 								grid.voxels.push_back({x, y, z, r, g, b, a});
@@ -451,8 +451,7 @@ bool 	flipV = false;
 	constexpr auto &eps = EPS;
 	for (const auto &tri : triangles) {
 
-			if (static int i = 0; !((++i)%1000))
-			DUMP(tri.v0, tri.v1,tri.v2, tri.uv0, tri.materialIdx);
+			//if (static int i = 0; !((++i)%1000))DUMP(tri.v0, tri.v1,tri.v2, tri.uv0, tri.materialIdx);
 
 			const auto pick_color_and_return = [&](const int &x, const int &y,
 													   const int &z) {
@@ -503,7 +502,7 @@ bool 	flipV = false;
 					}
 				}
 				if (static int i = 0; !((++i) % 10000)) {
-					DUMP(x, y, z, r, g, b, a);
+					//DUMP(x, y, z, r, g, b, a);
 				}
 				grid.voxels.push_back({x, y, z, r, g, b, a});
 			};
