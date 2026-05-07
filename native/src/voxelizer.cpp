@@ -5,6 +5,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "voxelizer.h"
+#include "../../../geoid.h"
 #include <tiny_gltf.h>
 #include <iostream>
 #include <cmath>
@@ -380,7 +381,9 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
 			constexpr double metersPerDeg = 40075696.0 / 360.0;
 			const Vec3 llh = ecefToLonLatHeight(world);
 			const double mapX = ((llh.x - mapCenterLon) * metersPerDeg) / mapScaleX;
-			const double mapY = llh.z / mapScaleY - mapCenterY;
+			const double orthometricHeight =
+					earth::ellipsoid_to_orthometric_height(llh.y, llh.x, llh.z);
+			const double mapY = orthometricHeight / mapScaleY - mapCenterY;
 			const double mapZ = ((llh.y - mapCenterLat) * metersPerDeg) / mapScaleZ;
 			return {mapX - nodeMinX, mapY - nodeMinY, mapZ - nodeMinZ};
 		}
