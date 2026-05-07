@@ -14,8 +14,6 @@
 #include <functional>
 #include <limits>
 
-#include "/home/proller/games/freeminer_p3/src/debug/dump.h"
-
 // --- Helper Math ---
 
 struct Vec3 { double x, y, z;
@@ -332,8 +330,6 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
 		return {dot3(delta, east), dot3(delta, up), dot3(delta, north)};
 	};
 
-		DUMP(tile.box, tile.geometricError, up, east, north, len, center, box_size);
-
 		Vec3 rotated_tile_box_center{0, 0, 0};
 			if (!tile.box.empty())
 			{
@@ -341,15 +337,6 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
 				rotated_tile_box_center = ecefDeltaToLocal(tile_box_center - center);
 			}
 	const auto rotated_half_center = rotated_tile_box_center / 2;
-	//auto rotated_half_center = rotated_center;
-	//rotated_half_center = {0,0,0};
-	DUMP(box_center, rotated_tile_box_center, rotated_half_center);
-	// Transform all triangles
-	//if (0)
-	if (!triangles.empty()) {
-		DUMP("br", triangles.front().v0, triangles.front().v1, triangles.front().v2);
-	}
-//if(0)
 	const double gridCenter = resolution * 0.5;
 	bool verticesAreEcef = false;
 	if (!triangles.empty()) {
@@ -370,7 +357,6 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
 		const double rawD2 = lengthSquared(v - reference);
 		const double swizzledD2 = lengthSquared(gltfAxisToEcef(v) - reference);
 		useGltfAxisToEcef = swizzledD2 < rawD2;
-		DUMP(verticesAreEcef, useGltfAxisToEcef, rawD2, swizzledD2);
 	}
 	const bool useGlobalMapProjection = verticesAreEcef &&
 			std::isfinite(mapCenterLon) && std::isfinite(mapCenterLat) &&
@@ -397,10 +383,6 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
 		t.v0 = vertexToVoxel(t.v0);
 		t.v1 = vertexToVoxel(t.v1);
 		t.v2 = vertexToVoxel(t.v2);
-	}
-
-		if (!triangles.empty()) {
-		DUMP("ar", triangles.front().v0, triangles.front().v1, triangles.front().v2);
 	}
 
 		// Recompute BBox after rotation
@@ -430,12 +412,10 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
 				}
 				min.y += yOffsetNodes;
 				max.y += yOffsetNodes;
-				DUMP(yOffsetNodes, min, max);
 			}
 
     // 3. Scan convert triangles, already in a common voxel coordinate frame.
     double maxDim = std::max({max.x - min.x, max.y - min.y, max.z - min.z});
-	DUMP(maxDim, box_size, maxDim, resolution, min, max);
 	if (maxDim <= 0 || resolution <= 0)
 		return grid;
 
@@ -525,7 +505,6 @@ if (0)
 				int minZ = tMinZ;
 				int maxZ = tMaxZ;
 				int voxelSizeInt = std::max(1, int(voxelSize));
-				DUMP(minX, maxX, minY, maxY, minZ, maxZ, voxelSize, voxelSizeInt, min, max);
 				for (int z = minZ; z <= maxZ; z+=voxelSizeInt) {
 					for (int y = minY; y <= maxY; y+=voxelSizeInt) {
 						for (int x = minX; x <= maxX; x+=voxelSizeInt) {
@@ -596,9 +575,6 @@ if (0)
 									}
 								}
 							}
-			if (static int i = 0; !((++i)%10000))
-			//DUMP(x, y, z, r, g, b, a);
-
 							//if (have)
 								grid.voxels.push_back({x, y, z, r, g, b, a});
 						}
@@ -621,7 +597,6 @@ bool 	flipV = false;
 	int total = grid_ * grid_ * grid_;
 	std::vector<uint8_t> occ(total, 0);
 	std::vector<std::array<uint8_t, 4>> colors(total, {255, 255, 255, 255});
-//DUMP(grid_, total);
 	std::vector<double> bestD2(total, std::numeric_limits<double>::infinity());
 
 
@@ -700,9 +675,6 @@ bool 	flipV = false;
 	};
 
 	for (const auto &tri : triangles) {
-			if (static int i = 0; !((++i)%1000))
-			DUMP(tri.v0, tri.v1,tri.v2, tri.uv0, tri.materialIdx);
-
 			const double x0 = tri.v0.x, y0 = tri.v0.y, z00 = tri.v0.z;
 			const double x1 = tri.v1.x, y1 = tri.v1.y, z1f = tri.v1.z;
 			const double x2 = tri.v2.x, y2 = tri.v2.y, z2f = tri.v2.z;
