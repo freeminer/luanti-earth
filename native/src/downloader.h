@@ -7,7 +7,8 @@ struct TileData {
     std::string url;
     std::string data;
     std::vector<double> box;
-    double geometricError;
+    std::vector<double> transform;
+    double geometricError = 0.0;
     // Add metadata like translation, etc.
 };
 

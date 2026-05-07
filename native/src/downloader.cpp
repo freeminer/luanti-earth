@@ -19,6 +19,9 @@ std::mutex TileDownloader::cacheMutex;
 #include <curl/curl.h>
 #endif
 
+#include "/home/proller/games/freeminer_p3/src/debug/dump.h"
+
+
 using json = nlohmann::json;
 
 // --- Helper Classes for Geometry ---
@@ -104,6 +107,27 @@ Sphere obbToSphere(const std::vector<double>& boxSpec) {
     double radius = 0.5 * std::sqrt(dx * dx + dy * dy + dz * dz);
 
     return { {midX, midY, midZ}, radius };
+}
+
+static std::vector<double> identityTransform() {
+    return {
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    };
+}
+
+static std::vector<double> multiplyTransform(const std::vector<double>& a,
+                                             const std::vector<double>& b) {
+    std::vector<double> out(16, 0.0);
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            for (int k = 0; k < 4; ++k)
+                out[col * 4 + row] += a[k * 4 + row] * b[col * 4 + k];
+        }
+    }
+    return out;
 }
 
 // --- Helpers ---
@@ -285,13 +309,21 @@ std::string TileDownloader::fetchUrlPublic(const std::string& url) {
 // --- Traversal Logic ---
 
 void parseNode(const json& node,
-               const Sphere& regionSphere,
-               const std::string& baseURL,
-               std::string& session,
-               const std::string& apiKey,
-               std::vector<TileData>& glbUrls,
-               TileDownloader* downloader) {
-    TileData result;
+	               const Sphere& regionSphere,
+	               const std::string& baseURL,
+	               std::string& session,
+	               const std::string& apiKey,
+	               std::vector<TileData>& glbUrls,
+	               TileDownloader* downloader,
+	               const std::vector<double>& parentTransform) {
+	    TileData result;
+	    std::vector<double> nodeTransform = parentTransform;
+	    if (node.contains("transform") && node["transform"].is_array()) {
+	        auto localTransform = node["transform"].get<std::vector<double>>();
+	        if (localTransform.size() == 16)
+	            nodeTransform = multiplyTransform(parentTransform, localTransform);
+	    }
+	    result.transform = nodeTransform;
 
     static int nodeCount = 0;
     nodeCount++;
@@ -304,9 +336,10 @@ void parseNode(const json& node,
     bool intersects = false;
     if (node.contains("boundingVolume") &&
         node["boundingVolume"].contains("box")) {
-        std::vector<double> box = node["boundingVolume"]["box"].get<std::vector<double>>();
-        result.box = box;
-        Sphere sphere = obbToSphere(box);
+	        std::vector<double> box = node["boundingVolume"]["box"].get<std::vector<double>>();
+	        result.box = box;
+	        Sphere sphere = obbToSphere(box);
+        //DUMP(box, sphere.center, sphere.radius);
         if (regionSphere.intersects(sphere)) intersects = true;
     } else {
         intersects = true;
@@ -319,20 +352,26 @@ void parseNode(const json& node,
         return;
     }
 
-    if (node.contains("children") && node["children"].is_array()) {
-        for (const auto& child : node["children"]) {
-            parseNode(child, regionSphere, baseURL, session, apiKey, glbUrls, downloader);
-        }
-        return;
-    }
+	    if (node.contains("children") && node["children"].is_array()) {
+	        for (const auto& child : node["children"]) {
+	            parseNode(child, regionSphere, baseURL, session, apiKey, glbUrls, downloader,
+	                      nodeTransform);
+	        }
+	        return;
+	    }
 
-    bool allow_return = false;
+    bool allow_return = true;
     if (node.contains("geometricError")) {
         result.geometricError =  node["geometricError"].get<double>();
        const int ge_int = int(result.geometricError);
-       if (ge_int == 2) allow_return = true;
+       //DUMP(result.geometricError, ge_int);
+       //if (ge_int != 2)return;
     } else {
+        DUMP("noge");
+        //return;
     }
+
+    //DUMP(node.size(), allow_return);
     // Leaf or content
     std::vector<json> contents;
     if (node.contains("content"))
@@ -388,7 +427,7 @@ void parseNode(const json& node,
         if (!session.empty() && fullUrl.find("session=") == std::string::npos) {
             fullUrl += separator + std::string("session=") + session;
         }
-
+        
         std::cout << "Full URL: " << fullUrl << std::endl;
 
         result.url = fullUrl;
@@ -403,8 +442,9 @@ void parseNode(const json& node,
                 try {
                     json subJson = json::parse(data.begin(), data.end());
                     if (subJson.contains("root")) {
-                        parseNode(subJson["root"], regionSphere, fullUrl,
-                                  session, apiKey, glbUrls, downloader);
+	                        parseNode(subJson["root"], regionSphere, fullUrl,
+	                                  session, apiKey, glbUrls, downloader,
+	                                  nodeTransform);
                     } else if (!subJson.empty()) {
                         // No "root" key - maybe it's directly a tileset node?
                         std::cout << "  -> JSON has no 'root', keys are: ";
@@ -414,16 +454,19 @@ void parseNode(const json& node,
                         std::cout << std::endl;
 
                         // Try treating it as a tileset node directly
-                        parseNode(subJson, regionSphere, fullUrl,
-                                  session, apiKey, glbUrls, downloader);
+	                        parseNode(subJson, regionSphere, fullUrl,
+	                                  session, apiKey, glbUrls, downloader,
+	                                  nodeTransform);
                     } else {
                         std::cout << "  -> Empty JSON, treating as GLB" << std::endl;
+DUMP(result.url);
                         if (allow_return)
                         glbUrls.emplace_back(result);
                     }
                 } catch (...) {
                     // If it's not valid JSON, treat it as a GLB
                     std::cout << "  -> JSON parse failed, treating as GLB" << std::endl;
+DUMP(result.url);
                     if (allow_return)
                     glbUrls.emplace_back(result);
                 }
@@ -437,19 +480,23 @@ void parseNode(const json& node,
                     json subJson = json::parse(data.begin(), data.end());
                     if (subJson.contains("root")) {
                         std::cout << "    -> It's JSON, recursing..." << std::endl;
-                        parseNode(subJson["root"], regionSphere, fullUrl,
-                                  session, apiKey, glbUrls, downloader);
+	                        parseNode(subJson["root"], regionSphere, fullUrl,
+	                                  session, apiKey, glbUrls, downloader,
+	                                  nodeTransform);
                     } else if (!subJson.empty()) {
                         std::cout << "    -> JSON has no 'root', recursing as node..." << std::endl;
-                        parseNode(subJson, regionSphere, fullUrl,
-                                  session, apiKey, glbUrls, downloader);
+	                        parseNode(subJson, regionSphere, fullUrl,
+	                                  session, apiKey, glbUrls, downloader,
+	                                  nodeTransform);
                     } else {
                         std::cout << "    -> Empty JSON, treating as GLB" << std::endl;
+DUMP(result.url);
                         if (allow_return)
                         glbUrls.emplace_back(result);
                     }
                 } catch (...) {
                     std::cout << "    -> JSON parse failed, treating as GLB" << std::endl;
+DUMP(result.url);
                     if (allow_return)
                     glbUrls.emplace_back(result);
                 }
@@ -549,6 +596,7 @@ std::vector<TileData> TileDownloader::downloadTiles(double lat,
     std::string session;
     std::vector<TileData> glbUrls;
 
+DUMP(rootUrl);
     auto [rootBytes, rootContentType] = fetchUrl(rootUrl);
     if (rootBytes.empty()) return results;
 
@@ -558,16 +606,17 @@ std::vector<TileData> TileDownloader::downloadTiles(double lat,
         // Extract session if present
         if (rootJson.contains("session")) {
             session = rootJson["session"].get<std::string>();
+DUMP(session)            ;
             std::cout << "Extracted session from JSON: " << session << std::endl;
         } else {
             // Fallback: adopt from URL if it ever appears there
             adoptSessionFromUrl(rootUrl, session);
         }
 
-        if (rootJson.contains("root")) {
-            parseNode(rootJson["root"], regionSphere, rootUrl,
-                      session, apiKey, glbUrls, this);
-        }
+	    if (rootJson.contains("root")) {
+	        parseNode(rootJson["root"], regionSphere, rootUrl,
+	                  session, apiKey, glbUrls, this, identityTransform());
+	    }
 
     } catch (const std::exception& e) {
         std::cerr << "JSON parse error: " << e.what() << std::endl;
@@ -578,6 +627,7 @@ std::vector<TileData> TileDownloader::downloadTiles(double lat,
     for (const auto& url : glbUrls) {
         auto [data, contentType] = fetchUrl(url.url);
         if (!data.empty()) {
+            //results.push_back(TileData{ .url=url,.data= data });
             auto uurl= url;
             uurl.data=data;
             results.push_back(uurl);

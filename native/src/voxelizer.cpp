@@ -9,10 +9,31 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <array>
+#include <functional>
+#include <limits>
+
+#include "/home/proller/games/freeminer_p3/src/debug/dump.h"
 
 // --- Helper Math ---
 
-struct Vec3 { double x, y, z; };
+struct Vec3 { double x, y, z;
+/*
+	Vec3 &normalize()
+	{
+		double length = x * x + y * y + z * z;
+		if (length == 0) // this check isn't an optimization but prevents getting NAN in the sqrt.
+			return *this;
+		length = core::reciprocal_squareroot(length);
+
+		x = (z * length);
+		y = (y * length);
+		z = (z * length);
+		return *this;
+	}
+*/
+
+};
 struct Vec2 { double u, v; };
 
 Vec3 operator+(const Vec3& a, const Vec3& b) { return {a.x+b.x, a.y+b.y, a.z+b.z}; }
@@ -34,16 +55,44 @@ static inline float clamp01(float a)
 	return a < 0 ? 0 : (a > 1 ? 1 : a);
 }
 
+static Vec3 ecefToLonLatHeight(const Vec3 &p)
+{
+	constexpr double a = 6378137.0;
+	constexpr double f = 1.0 / 298.257223563;
+	constexpr double e2 = f * (2.0 - f);
+	constexpr double radToDeg = 180.0 / 3.14159265358979323846;
+
+	const double lon = std::atan2(p.y, p.x);
+	const double planar = std::sqrt(p.x * p.x + p.y * p.y);
+	double lat = std::atan2(p.z, planar * (1.0 - e2));
+	for (int i = 0; i < 5; ++i) {
+		const double sinLat = std::sin(lat);
+		const double n = a / std::sqrt(1.0 - e2 * sinLat * sinLat);
+		lat = std::atan2(p.z + e2 * n * sinLat, planar);
+	}
+
+	const double sinLat = std::sin(lat);
+	const double n = a / std::sqrt(1.0 - e2 * sinLat * sinLat);
+	const double h = planar / std::cos(lat) - n;
+	return {lon * radToDeg, lat * radToDeg, h};
+}
+
 // --- Voxelizer Implementation ---
 
 #include "debug_log.h"
+//#include "mapgen/earth/CpuVoxelizer.h"
 
 bool triBoxOverlap(const Vec3& boxcenter, const Vec3& boxhalfsize, Vec3 triv0, Vec3 triv1, Vec3 triv2);
 
 // ...
 
+
+
 VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double originX,
-		double originY, double originZ)
+		double originY, double originZ, double yOffsetNodes,
+		double mapCenterLon, double mapCenterY, double mapCenterLat,
+		double mapScaleX, double mapScaleY, double mapScaleZ,
+		int nodeMinX, int nodeMinY, int nodeMinZ)
 {
 	VoxelGrid grid;
 	tinygltf::Model model;
@@ -67,12 +116,82 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
     // 1. Extract mesh data (vertices, indices, UVs, materials)
     // Simplified: Iterate all meshes, apply world transform (if any), collect triangles.
     
-    struct Triangle {
-        Vec3 v0, v1, v2;
-        Vec2 uv0, uv1, uv2;
-        int materialIdx;
-    };
+	struct Triangle {
+	    Vec3 v0, v1, v2;
+	    Vec2 uv0, uv1, uv2;
+	    int materialIdx;
+	    bool hasUV;
+	};
     std::vector<Triangle> triangles;
+
+	using Mat4 = std::array<double, 16>;
+	auto identityMat = []() {
+		return Mat4{
+			1, 0, 0, 0,
+			0, 1, 0, 0,
+			0, 0, 1, 0,
+			0, 0, 0, 1
+		};
+	};
+	auto multiplyMat = [](const Mat4 &a, const Mat4 &b) {
+		Mat4 out{};
+		for (int col = 0; col < 4; ++col) {
+			for (int row = 0; row < 4; ++row) {
+				for (int k = 0; k < 4; ++k)
+					out[col * 4 + row] += a[k * 4 + row] * b[col * 4 + k];
+			}
+		}
+		return out;
+	};
+	auto transformPoint = [](const Mat4 &m, const Vec3 &v) {
+		return Vec3{
+			m[0] * v.x + m[4] * v.y + m[8]  * v.z + m[12],
+			m[1] * v.x + m[5] * v.y + m[9]  * v.z + m[13],
+			m[2] * v.x + m[6] * v.y + m[10] * v.z + m[14]
+		};
+	};
+	auto tileTransform = identityMat();
+	if (tile.transform.size() == 16) {
+		for (size_t i = 0; i < 16; ++i)
+			tileTransform[i] = tile.transform[i];
+	}
+	auto nodeLocalMatrix = [&](const tinygltf::Node &node) {
+		Mat4 m = identityMat();
+		if (node.matrix.size() == 16) {
+			for (size_t i = 0; i < 16; ++i)
+				m[i] = node.matrix[i];
+			return m;
+		}
+
+		const double sx = node.scale.size() == 3 ? node.scale[0] : 1.0;
+		const double sy = node.scale.size() == 3 ? node.scale[1] : 1.0;
+		const double sz = node.scale.size() == 3 ? node.scale[2] : 1.0;
+
+		Mat4 r = identityMat();
+		if (node.rotation.size() == 4) {
+			const double x = node.rotation[0], y = node.rotation[1];
+			const double z = node.rotation[2], w = node.rotation[3];
+			const double xx = x * x, yy = y * y, zz = z * z;
+			const double xy = x * y, xz = x * z, yz = y * z;
+			const double wx = w * x, wy = w * y, wz = w * z;
+			r = Mat4{
+				1.0 - 2.0 * (yy + zz), 2.0 * (xy + wz),       2.0 * (xz - wy),       0,
+				2.0 * (xy - wz),       1.0 - 2.0 * (xx + zz), 2.0 * (yz + wx),       0,
+				2.0 * (xz + wy),       2.0 * (yz - wx),       1.0 - 2.0 * (xx + yy), 0,
+				0,                     0,                     0,                     1
+			};
+		}
+
+		Mat4 s = identityMat();
+		s[0] = sx; s[5] = sy; s[10] = sz;
+		Mat4 t = identityMat();
+		if (node.translation.size() == 3) {
+			t[12] = node.translation[0];
+			t[13] = node.translation[1];
+			t[14] = node.translation[2];
+		}
+		return multiplyMat(t, multiplyMat(r, s));
+	};
 
     // Helper to get buffer data
     auto getBuffer = [&](int accessorIdx) -> const unsigned char* {
@@ -83,17 +202,14 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
         return buffer.data.data() + bufferView.byteOffset + accessor.byteOffset;
     };
 
-    // Iterate nodes to find meshes
-    // TODO: Handle hierarchy/transforms properly. For now, assume flat or simple.
-    // Google 3D tiles usually have one mesh per node or simple hierarchy.
-    
-    for (const auto& node : model.nodes) {
-        if (node.mesh < 0) continue;
+	std::function<void(int, const Mat4&)> gatherNode = [&](int nodeIdx, const Mat4 &parentMatrix) {
+		if (nodeIdx < 0 || nodeIdx >= static_cast<int>(model.nodes.size()))
+			return;
+		const auto& node = model.nodes[nodeIdx];
+		const Mat4 nodeMatrix = multiplyMat(parentMatrix, nodeLocalMatrix(node));
+        if (node.mesh >= 0) {
         const auto& mesh = model.meshes[node.mesh];
 
-        // Node transform
-        // TODO: Apply node matrix/translation/rotation/scale
-        
         for (const auto& primitive : mesh.primitives) {
             const float* posBuffer = nullptr;
             const float* uvBuffer = nullptr;
@@ -129,7 +245,11 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
             if (!posBuffer) continue;
 
             auto getPos = [&](int idx) -> Vec3 {
-                return { (double)posBuffer[idx * posStride], (double)posBuffer[idx * posStride + 1], (double)posBuffer[idx * posStride + 2] };
+                return transformPoint(nodeMatrix, {
+					(double)posBuffer[idx * posStride],
+					(double)posBuffer[idx * posStride + 1],
+					(double)posBuffer[idx * posStride + 2]
+				});
             };
             auto getUV = [&](int idx) -> Vec2 {
                 if (!uvBuffer) return {0,0};
@@ -152,15 +272,29 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
                         i1 = ((unsigned char*)indicesBuffer)[i+1];
                         i2 = ((unsigned char*)indicesBuffer)[i+2];
                     }
-					triangles.push_back({getPos(i0), getPos(i1), getPos(i2), getUV(i0), getUV(i1), getUV(i2), primitive.material});
+					//DUMP(getPos(i0), getPos(i1), getPos(i2));
+					triangles.push_back({getPos(i0), getPos(i1), getPos(i2), getUV(i0), getUV(i1), getUV(i2), primitive.material, uvBuffer != nullptr});
 				}
             } else {
                 for (size_t i = 0; i < vertexCount; i += 3) {
-                    triangles.push_back({getPos(i), getPos(i+1), getPos(i+2), getUV(i), getUV(i+1), getUV(i+2), primitive.material});
+                    triangles.push_back({getPos(i), getPos(i+1), getPos(i+2), getUV(i), getUV(i+1), getUV(i+2), primitive.material, uvBuffer != nullptr});
                 }
             }
         }
-    }
+        }
+
+		for (int childIdx : node.children)
+			gatherNode(childIdx, nodeMatrix);
+	};
+
+	if (!model.scenes.empty()) {
+		const int sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
+		for (int nodeIdx : model.scenes[sceneIndex].nodes)
+			gatherNode(nodeIdx, tileTransform);
+	} else {
+		for (size_t nodeIdx = 0; nodeIdx < model.nodes.size(); ++nodeIdx)
+			gatherNode(static_cast<int>(nodeIdx), tileTransform);
+	}
 
 	Vec3 box_center{0, 0, 0};
 	double box_size = 0;
@@ -169,76 +303,107 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
 		box_size = tile.box[11] * 2; // max?
 	}
 
-    // 2. Use Provided Origin (Global Origin)
-    Vec3 center = { originX, originY, originZ };
+	// 2. Use Provided Origin (Global Origin)
+	Vec3 center = { originX, originY, originZ };
 
-    // Compute Rotation to align Up (center) to Y (0,1,0)
-    // Up vector = normalize(center)
+	//center = box_center;
+
 	double len = std::sqrt(center.x*center.x + center.y*center.y + center.z*center.z);
+	if (len <= 0.0)
+		return grid;
     Vec3 up = {center.x/len, center.y/len, center.z/len};
-    Vec3 targetUp = {0, 1, 0};
-
-    // Rotation quaternion from up to targetUp
-    // Axis = cross(up, targetUp)
-    Vec3 axis = {
-        up.y*targetUp.z - up.z*targetUp.y,
-        up.z*targetUp.x - up.x*targetUp.z,
-        up.x*targetUp.y - up.y*targetUp.x
-    };
-    double dot = up.x*targetUp.x + up.y*targetUp.y + up.z*targetUp.z;
-    
-    // Construct rotation matrix (simplified for vector rotation)
-    // v' = v * cos(theta) + cross(k, v) * sin(theta) + k * dot(k, v) * (1 - cos(theta))
-    // But we can just build a basis.
-    // Let's use a simple lookAt-style matrix or quaternion conversion.
-    
-    // Quat q = FromTwoVectors(up, targetUp)
-    double s = std::sqrt((1+dot)*2);
-    double invs = 1.0 / s;
-    double qx = axis.x * invs;
-    double qy = axis.y * invs;
-    double qz = axis.z * invs;
-    double qw = s * 0.5;
-
-    auto rotate = [&](Vec3 v, Vec3 center = {0,0,0}) -> Vec3 {
-        // v - center
-        double vx = v.x - center.x;
-        double vy = v.y - center.y;
-        double vz = v.z - center.z;
-
-        // Apply quaternion
-        double ix = qw*vx + qy*vz - qz*vy;
-        double iy = qw*vy + qz*vx - qx*vz;
-        double iz = qw*vz + qx*vy - qy*vx;
-        double iw = -qx*vx - qy*vy - qz*vz;
-
-        return {
-            ix*qw + iw*-qx + iy*-qz - iz*-qy,
-            iy*qw + iw*-qy + iz*-qx - ix*-qz,
-            iz*qw + iw*-qz + ix*-qy - iy*-qx
-        };
-    };
-
-	Vec3 rotated_tile_box_center{0, 0, 0};
-	if (!tile.box.empty())
-	{
-		const Vec3 tile_box_center = {tile.box[0], tile.box[1], tile.box[2]};
-		rotated_tile_box_center = rotate(tile_box_center, center);
+	Vec3 east{-up.y, up.x, 0.0};
+	double eastLen = std::sqrt(east.x * east.x + east.y * east.y + east.z * east.z);
+	if (eastLen < 1e-12) {
+		east = {1.0, 0.0, 0.0};
+		eastLen = 1.0;
 	}
+	east = east / eastLen;
+	Vec3 north{
+			up.y * east.z - up.z * east.y,
+			up.z * east.x - up.x * east.z,
+			up.x * east.y - up.y * east.x};
+
+	auto dot3 = [](const Vec3 &a, const Vec3 &b) {
+		return a.x * b.x + a.y * b.y + a.z * b.z;
+	};
+	auto ecefDeltaToLocal = [&](const Vec3 &delta) -> Vec3 {
+		return {dot3(delta, east), dot3(delta, up), dot3(delta, north)};
+	};
+
+		DUMP(tile.box, tile.geometricError, up, east, north, len, center, box_size);
+
+		Vec3 rotated_tile_box_center{0, 0, 0};
+			if (!tile.box.empty())
+			{
+				const Vec3 tile_box_center = {tile.box[0], tile.box[1], tile.box[2]};
+				rotated_tile_box_center = ecefDeltaToLocal(tile_box_center - center);
+			}
 	const auto rotated_half_center = rotated_tile_box_center / 2;
-    // Transform all triangles
-    for (auto& t : triangles) {
-        t.v0 = rotate(t.v0);
-        t.v1 = rotate(t.v1);
-        t.v2 = rotate(t.v2);
-        t.v0 = t.v0 + rotated_tile_box_center;
-		t.v1 = t.v1 + rotated_tile_box_center;
-		t.v2 = t.v2 + rotated_tile_box_center;
+	//auto rotated_half_center = rotated_center;
+	//rotated_half_center = {0,0,0};
+	DUMP(box_center, rotated_tile_box_center, rotated_half_center);
+	// Transform all triangles
+	//if (0)
+	if (!triangles.empty()) {
+		DUMP("br", triangles.front().v0, triangles.front().v1, triangles.front().v2);
+	}
+//if(0)
+	const double gridCenter = resolution * 0.5;
+	bool verticesAreEcef = false;
+	if (!triangles.empty()) {
+		const Vec3 &v = triangles.front().v0;
+		const double vLen = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+		verticesAreEcef = vLen > 1000000.0;
+	}
+	auto lengthSquared = [](const Vec3 &v) {
+		return v.x * v.x + v.y * v.y + v.z * v.z;
+	};
+	auto gltfAxisToEcef = [](const Vec3 &v) {
+		return Vec3{v.x, -v.z, v.y};
+	};
+	bool useGltfAxisToEcef = false;
+	if (verticesAreEcef && !triangles.empty()) {
+		const Vec3 &v = triangles.front().v0;
+		const Vec3 reference = !tile.box.empty() ? box_center : center;
+		const double rawD2 = lengthSquared(v - reference);
+		const double swizzledD2 = lengthSquared(gltfAxisToEcef(v) - reference);
+		useGltfAxisToEcef = swizzledD2 < rawD2;
+		DUMP(verticesAreEcef, useGltfAxisToEcef, rawD2, swizzledD2);
+	}
+	const bool useGlobalMapProjection = verticesAreEcef &&
+			std::isfinite(mapCenterLon) && std::isfinite(mapCenterLat) &&
+			mapScaleX != 0.0 && mapScaleY != 0.0 && mapScaleZ != 0.0;
+	auto vertexToVoxel = [&](const Vec3 &v) -> Vec3 {
+		const Vec3 world = useGltfAxisToEcef ? gltfAxisToEcef(v) : v;
+		if (useGlobalMapProjection) {
+			constexpr double metersPerDeg = 40075696.0 / 360.0;
+			const Vec3 llh = ecefToLonLatHeight(world);
+			const double mapX = ((llh.x - mapCenterLon) * metersPerDeg) / mapScaleX;
+			const double mapY = llh.z / mapScaleY - mapCenterY;
+			const double mapZ = ((llh.y - mapCenterLat) * metersPerDeg) / mapScaleZ;
+			return {mapX - nodeMinX, mapY - nodeMinY, mapZ - nodeMinZ};
+		}
+		const Vec3 local = verticesAreEcef ?
+				ecefDeltaToLocal(world - center) :
+				ecefDeltaToLocal(world) + rotated_tile_box_center;
+		return {local.x + gridCenter, local.y + gridCenter, local.z + gridCenter};
+	};
+
+	for (auto& t : triangles) {
+		t.v0 = vertexToVoxel(t.v0);
+		t.v1 = vertexToVoxel(t.v1);
+		t.v2 = vertexToVoxel(t.v2);
 	}
 
+		if (!triangles.empty()) {
+		DUMP("ar", triangles.front().v0, triangles.front().v1, triangles.front().v2);
+	}
+
+		// Recompute BBox after rotation
 		Vec3 min = {1e9, 1e9, 1e9}, max = {-1e9, -1e9, -1e9};
-		for (const auto &t : triangles) {
-			for (const auto &v : {t.v0, t.v1, t.v2}) {
+			for (const auto &t : triangles) {
+				for (const auto &v : {t.v0, t.v1, t.v2}) {
 				if (v.x < min.x)
 					min.x = v.x;
 				if (v.x > max.x)
@@ -251,22 +416,33 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
 					min.z = v.z;
 				if (v.z > max.z)
 					max.z = v.z;
-			}
-    }
+				}
+	    }
 
-    // 3. Rasterize (Simple 3D point-in-tri or conservative rasterization)
-    // For simplicity, let's do a basic grid traversal or point sampling.
-    // Given the resolution (e.g. 200), we define voxel size.
-    
+			if (std::isfinite(yOffsetNodes)) {
+				for (auto &t : triangles) {
+					t.v0.y += yOffsetNodes;
+					t.v1.y += yOffsetNodes;
+					t.v2.y += yOffsetNodes;
+				}
+				min.y += yOffsetNodes;
+				max.y += yOffsetNodes;
+				DUMP(yOffsetNodes, min, max);
+			}
+
+    // 3. Scan convert triangles, already in a common voxel coordinate frame.
     double maxDim = std::max({max.x - min.x, max.y - min.y, max.z - min.z});
-	double voxelSize = maxDim / box_size;
-	if (voxelSize <= 0)
+	DUMP(maxDim, box_size, maxDim, resolution, min, max);
+	if (maxDim <= 0 || resolution <= 0)
 		return grid;
 
-    Vec3 boxhalf{voxelSize*0.5, voxelSize*0.5, voxelSize*0.5};
-    int nx = std::ceil((max.x - min.x) / voxelSize);
-    int ny = std::ceil((max.y - min.y) / voxelSize);
-    int nz = std::ceil((max.z - min.z) / voxelSize);
+	const double unit = 1.0;
+	const double voxelSize = unit;
+
+    Vec3 boxhalf{unit * 0.5, unit * 0.5, unit * 0.5};
+    int nx = resolution;
+    int ny = resolution;
+    int nz = resolution;
 
     // Sparse grid map? Or dense if small enough.
     // Let's use a simple vector of voxels.
@@ -346,6 +522,7 @@ if (0)
 				int minZ = tMinZ;
 				int maxZ = tMaxZ;
 				int voxelSizeInt = std::max(1, int(voxelSize));
+				DUMP(minX, maxX, minY, maxY, minZ, maxZ, voxelSize, voxelSizeInt, min, max);
 				for (int z = minZ; z <= maxZ; z+=voxelSizeInt) {
 					for (int y = minY; y <= maxY; y+=voxelSizeInt) {
 						for (int x = minX; x <= maxX; x+=voxelSizeInt) {
@@ -432,134 +609,142 @@ static const float NEAR_W_FRACTION = 0.15f; // second‑slice threshold
 	const float nearFrac = NEAR_W_FRACTION;
 
 bool 	flipV = false;
+	(void)flipV;
 
 	//const auto G = maxDim + 1;
 	const auto G = resolution;
 
 	const auto grid_ = G;
 	int total = grid_ * grid_ * grid_;
-	std::vector<bool> occ(total, false);
-	//std::vector<uint32_t> colors(total, 0xFFFFFF);
+	std::vector<uint8_t> occ(total, 0);
+	std::vector<std::array<uint8_t, 4>> colors(total, {255, 255, 255, 255});
 //DUMP(grid_, total);
-	std::vector<float> bestD2(total, std::numeric_limits<float>::infinity());
+	std::vector<double> bestD2(total, std::numeric_limits<double>::infinity());
 
 
 	const auto z0 = 0;
-	const auto z1 = maxDim;
+	const auto z1 = G;
 
 	static const float EPS = 1e-6f; // inside test epsilon
 	constexpr auto &eps = EPS;
+	auto sampleImage = [](const tinygltf::Image &img, double u, double v) {
+		std::array<uint8_t, 4> out{255, 255, 255, 255};
+		if (img.width <= 0 || img.height <= 0 || img.component <= 0 || img.image.empty())
+			return out;
+
+		u = std::clamp(u, 0.0, 1.0);
+		v = std::clamp(v, 0.0, 1.0);
+		const double fx = u * (img.width - 1);
+		const double fy = v * (img.height - 1);
+		const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, img.width - 1);
+		const int y0 = std::clamp(static_cast<int>(std::floor(fy)), 0, img.height - 1);
+		const int x1 = std::min(x0 + 1, img.width - 1);
+		const int y1 = std::min(y0 + 1, img.height - 1);
+		const double dx = fx - x0;
+		const double dy = fy - y0;
+
+		auto texel = [&](int x, int y) {
+			std::array<double, 3> c{255.0, 255.0, 255.0};
+			const size_t p = (static_cast<size_t>(y) * img.width + x) * img.component;
+			if (p >= img.image.size())
+				return c;
+			c[0] = img.image[p];
+			c[1] = img.component >= 3 && p + 1 < img.image.size() ? img.image[p + 1] : c[0];
+			c[2] = img.component >= 3 && p + 2 < img.image.size() ? img.image[p + 2] : c[0];
+			return c;
+		};
+
+		const auto c00 = texel(x0, y0);
+		const auto c10 = texel(x1, y0);
+		const auto c01 = texel(x0, y1);
+		const auto c11 = texel(x1, y1);
+		const double w00 = (1.0 - dx) * (1.0 - dy);
+		const double w10 = dx * (1.0 - dy);
+		const double w01 = (1.0 - dx) * dy;
+		const double w11 = dx * dy;
+		for (int i = 0; i < 3; ++i) {
+			out[i] = static_cast<uint8_t>(std::clamp<int>(
+					static_cast<int>(c00[i] * w00 + c10[i] * w10 +
+							c01[i] * w01 + c11[i] * w11),
+					0, 255));
+		}
+		return out;
+	};
+
+	auto sampleTriangleColor = [&](const Triangle &tri, double l0, double l1, double l2) {
+		std::array<uint8_t, 4> color{255, 255, 255, 255};
+		if (tri.materialIdx >= 0 && tri.materialIdx < static_cast<int>(model.materials.size())) {
+			const auto &mat = model.materials[tri.materialIdx];
+			if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
+				color[0] = static_cast<uint8_t>(std::clamp<int>(
+						static_cast<int>(mat.pbrMetallicRoughness.baseColorFactor[0] * 255.0), 0, 255));
+				color[1] = static_cast<uint8_t>(std::clamp<int>(
+						static_cast<int>(mat.pbrMetallicRoughness.baseColorFactor[1] * 255.0), 0, 255));
+				color[2] = static_cast<uint8_t>(std::clamp<int>(
+						static_cast<int>(mat.pbrMetallicRoughness.baseColorFactor[2] * 255.0), 0, 255));
+			}
+			const int texIdx = mat.pbrMetallicRoughness.baseColorTexture.index;
+			if (tri.hasUV && texIdx >= 0 && texIdx < static_cast<int>(model.textures.size())) {
+				const int imgIdx = model.textures[texIdx].source;
+				if (imgIdx >= 0 && imgIdx < static_cast<int>(model.images.size())) {
+					const double su = l0 * tri.uv0.u + l1 * tri.uv1.u + l2 * tri.uv2.u;
+					const double sv = l0 * tri.uv0.v + l1 * tri.uv1.v + l2 * tri.uv2.v;
+					color = sampleImage(model.images[imgIdx], su, sv);
+				}
+			}
+		}
+		return color;
+	};
+
 	for (const auto &tri : triangles) {
+			if (static int i = 0; !((++i)%1000))
+			DUMP(tri.v0, tri.v1,tri.v2, tri.uv0, tri.materialIdx);
 
-			//if (static int i = 0; !((++i)%1000))DUMP(tri.v0, tri.v1,tri.v2, tri.uv0, tri.materialIdx);
+			const double x0 = tri.v0.x, y0 = tri.v0.y, z00 = tri.v0.z;
+			const double x1 = tri.v1.x, y1 = tri.v1.y, z1f = tri.v1.z;
+			const double x2 = tri.v2.x, y2 = tri.v2.y, z2f = tri.v2.z;
 
-			const auto pick_color_and_return = [&](const int &x, const int &y,
-													   const int &z) {
-				// Let's just add it for now and refine later.
-				// Color sampling:
-				// Barycentric coords to get UV, then sample texture.
+			const Vec3 e10{x1 - x0, y1 - y0, z1f - z00};
+			const Vec3 e20{x2 - x0, y2 - y0, z2f - z00};
+			const Vec3 n{
+					e10.y * e20.z - e10.z * e20.y,
+					e10.z * e20.x - e10.x * e20.z,
+					e10.x * e20.y - e10.y * e20.x};
+			const double nLen2 = n.x * n.x + n.y * n.y + n.z * n.z;
+			if (nLen2 < 1e-20)
+				continue;
 
-				// Sample texture
-				unsigned char r = 255, g = 255, b = 255, a = 255;
-				bool have = false;
-				if (tri.materialIdx >= 0 && tri.materialIdx < model.materials.size()) {
-					const auto &mat = model.materials[tri.materialIdx];
-					// Base color
-					if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
-						r = mat.pbrMetallicRoughness.baseColorFactor[0] * 255;
-						g = mat.pbrMetallicRoughness.baseColorFactor[1] * 255;
-						b = mat.pbrMetallicRoughness.baseColorFactor[2] * 255;
-						have = true;
-					}
-					// Texture
-					int texIdx = mat.pbrMetallicRoughness.baseColorTexture.index;
-					if (texIdx >= 0 && texIdx < model.textures.size()) {
-						int imgIdx = model.textures[texIdx].source;
-						if (imgIdx >= 0 && imgIdx < model.images.size()) {
-							const auto &img = model.images[imgIdx];
-							if (!img.image.empty()) {
-								// Sample UV (centroid of voxel? or triangle center?)
-								// Using UV0 of triangle for simplicity (bad!)
-								// Should interpolate UV at voxel center projected onto triangle.
-
-								// Just use triangle vertex 0 UV for now to prove pipeline.
-								int tx = (int)(tri.uv0.u * img.width) % img.width;
-								int ty = (int)(tri.uv0.v * img.height) % img.height;
-								if (tx < 0)
-									tx += img.width;
-								if (ty < 0)
-									ty += img.height;
-
-								int pixelIdx = (ty * img.width + tx) * img.component;
-								if (pixelIdx + 2 < img.image.size()) {
-									r = img.image[pixelIdx];
-									g = img.image[pixelIdx + 1];
-									b = img.image[pixelIdx + 2];
-									have = true;
-								}
-							}
-						}
-					}
-				}
-				if (static int i = 0; !((++i) % 10000)) {
-					//DUMP(x, y, z, r, g, b, a);
-				}
-				grid.voxels.push_back({x, y, z, r, g, b, a});
-			};
-
-			//for (size_t ii = 0; ii < triCount; ++ii) {
-			//	int i = triIdx[ii];
-
-			// Vertices
-			// float x0 = T.x0[i], y0 = T.y0[i], z00 = T.z0[i];
-			// float x1 = T.x1[i], y1 = T.y1[i], z1f = T.z1[i];
-			// float x2 = T.x2[i], y2 = T.y2[i], z2f = T.z2[i];
-			auto &x0 = tri.v0.x, &y0 = tri.v0.y, &z00 = tri.v0.z;
-			auto &x1 = tri.v1.x, &y1 = tri.v1.y, &z1f = tri.v1.z;
-			auto &x2 = tri.v2.x, &y2 = tri.v2.y, &z2f = tri.v2.z;
-
-			// Normal & edges
-			// float e10x = T.e10x[i], e10y = T.e10y[i], e10z = T.e10z[i];
-			// float e20x = T.e20x[i], e20y = T.e20y[i], e20z = T.e20z[i];
-			// float nx = T.nx[i], ny = T.ny[i], nz = T.nz[i];
-
-			// AABB in voxel space
-			int minX = std::clamp<int>(
-					static_cast<int>(std::floor(std::min({x0, x1, x2}))), 0, G - 1);
-			int minY = std::clamp<int>(
-					static_cast<int>(std::floor(std::min({y0, y1, y2}))), 0, G - 1);
-			int minZ = std::clamp<int>(
-					static_cast<int>(std::floor(std::min({z00, z1f, z2f}))), 0, G - 1);
-			int maxX = std::clamp<int>(
-					static_cast<int>(std::ceil(std::max({x0, x1, x2}))), 0, G - 1);
-			int maxY = std::clamp<int>(
-					static_cast<int>(std::ceil(std::max({y0, y1, y2}))), 0, G - 1);
-			int maxZ = std::clamp<int>(
-					static_cast<int>(std::ceil(std::max({z00, z1f, z2f}))), 0, G - 1);
-
-			// Skip if slab does not intersect
-			//if (maxZ < z0 || minZ >= z1)
-			//	continue;
+				// AABB in voxel space. Reject before clamping so neighboring
+				// chunks are not smeared onto this chunk's border.
+				const int rawMinX = static_cast<int>(std::floor(std::min({x0, x1, x2})));
+				const int rawMinY = static_cast<int>(std::floor(std::min({y0, y1, y2})));
+				const int rawMinZ = static_cast<int>(std::floor(std::min({z00, z1f, z2f})));
+				const int rawMaxX = static_cast<int>(std::ceil(std::max({x0, x1, x2})));
+				const int rawMaxY = static_cast<int>(std::ceil(std::max({y0, y1, y2})));
+				const int rawMaxZ = static_cast<int>(std::ceil(std::max({z00, z1f, z2f})));
+				if (rawMaxX < 0 || rawMinX >= G || rawMaxY < 0 || rawMinY >= G ||
+						rawMaxZ < z0 || rawMinZ >= z1)
+					continue;
+				int minX = std::clamp<int>(rawMinX, 0, G - 1);
+				int minY = std::clamp<int>(rawMinY, 0, G - 1);
+				int minZ = std::clamp<int>(rawMinZ, 0, G - 1);
+				int maxX = std::clamp<int>(rawMaxX, 0, G - 1);
+				int maxY = std::clamp<int>(rawMaxY, 0, G - 1);
+				int maxZ = std::clamp<int>(rawMaxZ, 0, G - 1);
 
 			// Dominant axis
-			float abx = std::abs(nx), aby = std::abs(ny), abz = std::abs(nz);
-			int wAxis, uAxis, vAxis;
+			double abx = std::abs(n.x), aby = std::abs(n.y), abz = std::abs(n.z);
+			int wAxis;
 			if (abz >= abx && abz >= aby) {
 				wAxis = 2;
-				uAxis = 0;
-				vAxis = 1;
-		} else if (aby >= abx) {
-			wAxis = 1;
-			uAxis = 2;
-			vAxis = 0;
-		} else {
-			wAxis = 0;
-			uAxis = 1;
-			vAxis = 2;
-		}
+			} else if (aby >= abx) {
+				wAxis = 1;
+			} else {
+				wAxis = 0;
+			}
 
 		// Map to (U,V,W)
-		float U0, V0, W0, U1, V1, W1, U2, V2, W2;
+		double U0, V0, W0, U1, V1, W1, U2, V2, W2;
 		if (wAxis == 2) { // Z‑major
 			U0 = x0;
 			V0 = y0;
@@ -605,51 +790,37 @@ bool 	flipV = false;
 			continue;
 
 		// Barycentric gradients
-		float denom = (V1 - V2) * (U0 - U2) + (U2 - U1) * (V0 - V2);
+		double denom = (V1 - V2) * (U0 - U2) + (U2 - U1) * (V0 - V2);
 		if (std::abs(denom) < 1e-12f)
 			continue;
-		float invDen = 1.0f / denom;
-		float dL0du = (V1 - V2) * invDen;
-		float dL0dv = (U2 - U1) * invDen;
-		float dL1du = (V2 - V0) * invDen;
-		float dL1dv = (U0 - U2) * invDen;
+		double invDen = 1.0 / denom;
+		double dL0du = (V1 - V2) * invDen;
+		double dL1du = (V2 - V0) * invDen;
 
 		// W interpolation coefficients
-		float Wc0 = W0 - W2;
-		float Wc1 = W1 - W2;
-		float WcC = W2;
+		double Wc0 = W0 - W2;
+		double Wc1 = W1 - W2;
+		double WcC = W2;
 
 		// Normal w‑component for depth scale
-		float nW = (wAxis == 2 ? nz : (wAxis == 1 ? ny : nx));
-		float nLen2 = nx * nx + ny * ny + nz * nz;
-		if (nLen2 < 1e-20f)
-			continue;
-		float depthScale = (nW * nW) / nLen2;
-
-		// UVs
-		float tu0 = tri.uv0.u, tv0 = tri.uv0.v;
-		float tu1 = tri.uv1.u, tv1 = tri.uv1.v;
-		float tu2 = tri.uv2.u, tv2 = tri.uv2.v;
-
-		bool hasUV = true; // TODOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
-		//T.hasUV[i] &&
-		//tex != nullptr;
+		double nW = (wAxis == 2 ? n.z : (wAxis == 1 ? n.y : n.x));
+		double depthScale = (nW * nW) / nLen2;
 
 		// Scan rows in V
 		for (int v = vMin; v <= vMax; ++v) {
-			float u0c = uMin + 0.5f;
-			float vc = v + 0.5f;
+			double u0c = uMin + 0.5;
+			double vc = v + 0.5;
 
 			// L0, L1 at (u0c, vc)
-			float L0 = ((V1 - V2) * (u0c - U2) + (U2 - U1) * (vc - V2)) * invDen;
-			float L1 = ((V2 - V0) * (u0c - U2) + (U0 - U2) * (vc - V2)) * invDen;
-			float L2 = 1.0f - L0 - L1;
+			double L0 = ((V1 - V2) * (u0c - U2) + (U2 - U1) * (vc - V2)) * invDen;
+			double L1 = ((V2 - V0) * (u0c - U2) + (U0 - U2) * (vc - V2)) * invDen;
+			double L2 = 1.0 - L0 - L1;
 
 			// W at start of row and dW/du
-			float W = Wc0 * L0 + Wc1 * L1 + WcC;
-			float dWdu = dL0du * Wc0 + dL1du * Wc1;
+			double W = Wc0 * L0 + Wc1 * L1 + WcC;
+			double dWdu = dL0du * Wc0 + dL1du * Wc1;
 
-			float L0du = dL0du, L1du = dL1du;
+			double L0du = dL0du, L1du = dL1du;
 
 			for (int u = uMin; u <= uMax; ++u) {
 				if (L0 >= -eps && L1 >= -eps && L2 >= -eps) {
@@ -674,34 +845,21 @@ bool 	flipV = false;
 					//if (iz >= z0 && iz < z1 && ix >= 0 && ix < G && iy >= 0 && iy < G) {
 					if (iz >= z0 && iz < z1 && ix >= 0 && ix < G && iy >= 0 && iy < G) {
 						int lin = ix + G * (iy + G * iz);
-						float delta =
-								W - ((wAxis == 2 ? iz : (wAxis == 1 ? iy : ix)) + 0.5f);
-						float d2 = delta * delta * depthScale;
+						double delta =
+								W - ((wAxis == 2 ? iz : (wAxis == 1 ? iy : ix)) + 0.5);
+						double d2 = delta * delta * depthScale;
 //DUMP(ix, iy, iz, lin);
 						if (d2 < bestD2[lin]) {
 							bestD2[lin] = d2;
-							occ[lin] = true;
-							//!!!!!!!colors[lin] =
-							if (hasUV) {
-								pick_color_and_return(ix, iy, iz);
-								/*
-								const auto col = sampleCUDA(T.texPixels, texW, texH,
-										texStride,
-										clamp01(L0 * tu0 + L1 * tu1 + L2 * tu2),
-										clamp01(L0 * tv0 + L1 * tv1 + L2 * tv2), flipV);
-								if (col[3]) {
-									callback(ix, iy, iz, col[0], col[1], col[2], col[3]);
-									//++filledHere;
-								}
-									*/
-							}
+							occ[lin] = 1;
+							colors[lin] = sampleTriangleColor(tri, L0, L1, L2);
 						}
 					}
 
 					// Near‑slice handling
-					float frac = W - static_cast<float>(std::floor(W));
+					double frac = W - std::floor(W);
 					if (frac < nearFrac || frac > 1.0f - nearFrac) {
-						int w2 = ((W - (wIdx + 0.5f)) < 0) ? (wIdx - 1) : (wIdx + 1);
+						int w2 = ((W - (wIdx + 0.5)) < 0) ? (wIdx - 1) : (wIdx + 1);
 
 						int ix2, iy2, iz2;
 						if (wAxis == 2) {
@@ -721,27 +879,12 @@ bool 	flipV = false;
 						if (iz2 >= z0 && iz2 < z1 && ix2 >= 0 && ix2 < G && iy2 >= 0 &&
 								iy2 < G && w2 >= 0 && w2 < G) {
 							int lin2 = ix2 + G * (iy2 + G * iz2);
-							float delta2 = W - (static_cast<float>(w2) + 0.5f);
-							float d2b = delta2 * delta2 * depthScale;
+							double delta2 = W - (static_cast<double>(w2) + 0.5);
+							double d2b = delta2 * delta2 * depthScale;
 							if (d2b < bestD2[lin2]) {
 								bestD2[lin2] = d2b;
-								occ[lin2] = true;
-								//!!!!!!colors[lin2] =
-								if (hasUV) {
-									pick_color_and_return(ix, iy, iz);
-									/*
-									const auto col = sampleCUDA(T.texPixels, texW, texH,
-											texStride,
-											clamp01(L0 * tu0 + L1 * tu1 + L2 * tu2),
-											clamp01(L0 * tv0 + L1 * tv1 + L2 * tv2),
-											flipV);
-									if (col[3]) {
-										callback(ix, iy, iz, col[0], col[1], col[2],
-												col[3]);
-										//++filledHere;
-										}
-*/
-								}
+								occ[lin2] = 1;
+								colors[lin2] = sampleTriangleColor(tri, L0, L1, L2);
 							}
 						}
 					}
@@ -754,11 +897,22 @@ bool 	flipV = false;
 				W += dWdu;
 			}
 		}
-		//}
+	}
+
+	grid.voxels.reserve(grid.voxels.size() + total / 16);
+	for (int i = 0; i < total; ++i) {
+		if (!occ[i])
+			continue;
+		const int z = i / (G * G);
+		const int rem = i - z * G * G;
+		const int y = rem / G;
+		const int x = rem - y * G;
+		const auto &c = colors[i];
+		grid.voxels.push_back({x, y, z, c[0], c[1], c[2], c[3]});
 	}
 }
 
-    // Deduplicate voxels?
+	// Deduplicate voxels?
     // The current loop adds multiple voxels for overlapping triangles.
     // We should probably use a grid/map to store unique voxels.
     
