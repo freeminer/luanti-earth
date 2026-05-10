@@ -9,6 +9,7 @@ local modname   = minetest.get_current_modname()
 local modpath   = minetest.get_modpath(modname)
 local worldpath = minetest.get_worldpath()
 
+--[[
 -- All cache / downloaded data goes into the world folder,
 -- not into mods/, to satisfy Luanti security.
 local cache_root = worldpath .. "/luanti_earth_cache"
@@ -64,6 +65,7 @@ luanti_earth = {
 
 minetest.log("action", "[luanti_earth] Voxel-based mod loaded")
 
+]]
 --------------------------------------------------
 -- Load colors and register pure color nodes
 --------------------------------------------------
@@ -82,6 +84,7 @@ for i = 0, 255 do
     end
 end
 
+--[[
 --------------------------------------------------
 -- Progress bar helper
 --------------------------------------------------
@@ -188,7 +191,7 @@ minetest.register_chatcommand("visit", {
             int get_job_result_size(int job_id);
             int get_job_result(int job_id, char* buffer, int max_len);
             void free_job(int job_id);
-        ]]
+        ] ]
 
         -- Load DLL
         -- Try multiple paths for robustness
@@ -378,3 +381,5 @@ minetest.register_chatcommand("earth_export_viz", {
         return true, "Exported to: " .. output_path
     end
 })
+
+]]

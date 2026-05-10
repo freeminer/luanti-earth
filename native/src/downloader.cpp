@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <chrono>
 
 std::mutex TileDownloader::cacheMutex;
 
@@ -23,6 +24,8 @@ std::mutex TileDownloader::cacheMutex;
 
 
 using json = nlohmann::json;
+
+static constexpr auto ROOT_TILESET_CACHE_TTL = std::chrono::hours(1);
 
 // --- Helper Classes for Geometry ---
 
@@ -142,6 +145,23 @@ static void adoptSessionFromUrl(const std::string& url, std::string& session) {
     if (end > pos) {
         session = url.substr(pos, end - pos);
     }
+}
+
+static bool isRootTilesetUrl(const std::string& url)
+{
+    return url.find("/root.json") != std::string::npos ||
+           url.rfind("root.json", 0) == 0;
+}
+
+static bool isCacheEntryExpired(const std::string& cacheFile, std::chrono::seconds ttl)
+{
+    std::error_code ec;
+    const auto modified = std::filesystem::last_write_time(cacheFile, ec);
+    if (ec)
+        return true;
+
+    const auto now = std::filesystem::file_time_type::clock::now();
+    return modified + ttl < now;
 }
 
 // --- HTTP Helper ---
@@ -537,32 +557,41 @@ std::pair<std::string, std::string> TileDownloader::fetchUrl(
 		};
 		stripParam("key");
 		stripParam("session");
+		const bool rootTileset = isRootTilesetUrl(cacheUrl);
 		std::hash<std::string> hasher;
 		size_t hashValue = hasher(cacheUrl);
 		cacheFile = cacheDir + "/" + std::to_string(hashValue) + ".bin";
 		typeFile = cacheDir + "/" + std::to_string(hashValue) + ".type";
 
 		// Try to load from cache
-		if (std::filesystem::exists(cacheFile)) {
-			std::string data;
-			std::ifstream in(cacheFile, std::ios::binary);
-			if (in) {
-				in.unsetf(std::ios::skipws);
-				std::streampos fileSize;
-				in.seekg(0, std::ios::end);
-				fileSize = in.tellg();
-				in.seekg(0, std::ios::beg);
-				data.reserve(static_cast<size_t>(fileSize));
-				data.insert(data.begin(), std::istream_iterator<unsigned char>(in),
-						std::istream_iterator<unsigned char>());
+			if (std::filesystem::exists(cacheFile)) {
+				if (rootTileset &&
+						isCacheEntryExpired(cacheFile,
+								std::chrono::duration_cast<std::chrono::seconds>(
+										ROOT_TILESET_CACHE_TTL))) {
+					std::cout << "Root tileset cache expired, refreshing: " << cacheUrl
+							  << std::endl;
+				} else {
+					std::string data;
+					std::ifstream in(cacheFile, std::ios::binary);
+					if (in) {
+						in.unsetf(std::ios::skipws);
+						std::streampos fileSize;
+						in.seekg(0, std::ios::end);
+						fileSize = in.tellg();
+						in.seekg(0, std::ios::beg);
+						data.reserve(static_cast<size_t>(fileSize));
+						data.insert(data.begin(), std::istream_iterator<unsigned char>(in),
+								std::istream_iterator<unsigned char>());
+					}
+					std::string contentType;
+					if (std::filesystem::exists(typeFile)) {
+						std::ifstream ct(typeFile);
+						std::getline(ct, contentType);
+					}
+					return {data, contentType};
+				}
 			}
-			std::string contentType;
-			if (std::filesystem::exists(typeFile)) {
-				std::ifstream ct(typeFile);
-				std::getline(ct, contentType);
-			}
-			return {data, contentType};
-		}
 	}
 	// Not cached – fetch from network
 	auto [data, contentType] = fetchUrlNonCached(url);
