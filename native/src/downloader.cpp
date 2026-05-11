@@ -130,6 +130,43 @@ static std::vector<double> multiplyTransform(const std::vector<double>& a,
     return out;
 }
 
+static Vector3 transformPoint(const std::vector<double>& m, const Vector3 &v) {
+    if (m.size() != 16)
+        return v;
+    return {
+        m[0] * v.x + m[4] * v.y + m[8] * v.z + m[12],
+        m[1] * v.x + m[5] * v.y + m[9] * v.z + m[13],
+        m[2] * v.x + m[6] * v.y + m[10] * v.z + m[14]
+    };
+}
+
+static Vector3 transformVector(const std::vector<double>& m, const Vector3 &v) {
+    if (m.size() != 16)
+        return v;
+    return {
+        m[0] * v.x + m[4] * v.y + m[8] * v.z,
+        m[1] * v.x + m[5] * v.y + m[9] * v.z,
+        m[2] * v.x + m[6] * v.y + m[10] * v.z
+    };
+}
+
+static std::vector<double> transformBox(const std::vector<double>& box,
+                                        const std::vector<double>& transform) {
+    if (box.size() < 12 || transform.size() != 16)
+        return box;
+
+    const Vector3 center{box[0], box[1], box[2]};
+    const Vector3 h1{box[3], box[4], box[5]};
+    const Vector3 h2{box[6], box[7], box[8]};
+    const Vector3 h3{box[9], box[10], box[11]};
+    const Vector3 tc = transformPoint(transform, center);
+    const Vector3 th1 = transformVector(transform, h1);
+    const Vector3 th2 = transformVector(transform, h2);
+    const Vector3 th3 = transformVector(transform, h3);
+    return {tc.x, tc.y, tc.z, th1.x, th1.y, th1.z,
+            th2.x, th2.y, th2.z, th3.x, th3.y, th3.z};
+}
+
 // --- Helpers ---
 
 // Extract a "session=" query parameter from a URL and update the session string.
@@ -354,6 +391,7 @@ void parseNode(const json& node,
     if (node.contains("boundingVolume") &&
         node["boundingVolume"].contains("box")) {
 	        std::vector<double> box = node["boundingVolume"]["box"].get<std::vector<double>>();
+	        box = transformBox(box, nodeTransform);
 	        result.box = box;
 	        Sphere sphere = obbToSphere(box);
         //DUMP(box, sphere.center, sphere.radius);

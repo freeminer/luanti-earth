@@ -358,12 +358,15 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
 		const double swizzledD2 = lengthSquared(gltfAxisToEcef(v) - reference);
 		useGltfAxisToEcef = swizzledD2 < rawD2;
 	}
-	const bool useGlobalMapProjection = verticesAreEcef &&
+	const bool tileBoxCenterIsEcef = lengthSquared(box_center) > 1000000000000.0;
+	const bool useGlobalMapProjection = (verticesAreEcef || tileBoxCenterIsEcef) &&
 			std::isfinite(mapCenterLon) && std::isfinite(mapCenterLat) &&
 			mapScaleX != 0.0 && mapScaleY != 0.0 && mapScaleZ != 0.0;
 	auto vertexToVoxel = [&](const Vec3 &v) -> Vec3 {
-		const Vec3 world = useGltfAxisToEcef ? gltfAxisToEcef(v) : v;
+		Vec3 world = useGltfAxisToEcef ? gltfAxisToEcef(v) : v;
 		if (useGlobalMapProjection) {
+			if (!verticesAreEcef)
+				world = box_center + world;
 			constexpr double metersPerDeg = 40075696.0 / 360.0;
 			const Vec3 llh = ecefToLonLatHeight(world);
 			const double mapX = ((llh.x - mapCenterLon) * metersPerDeg) / mapScaleX;
