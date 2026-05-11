@@ -167,6 +167,61 @@ static std::vector<double> transformBox(const std::vector<double>& box,
             th2.x, th2.y, th2.z, th3.x, th3.y, th3.z};
 }
 
+static std::vector<double> sphereToBox(const std::vector<double>& sphere,
+                                       const std::vector<double>& transform) {
+    if (sphere.size() < 4)
+        return {};
+
+    Vector3 center{sphere[0], sphere[1], sphere[2]};
+    Vector3 h1{sphere[3], 0, 0};
+    Vector3 h2{0, sphere[3], 0};
+    Vector3 h3{0, 0, sphere[3]};
+    if (transform.size() == 16) {
+        center = transformPoint(transform, center);
+        h1 = transformVector(transform, h1);
+        h2 = transformVector(transform, h2);
+        h3 = transformVector(transform, h3);
+    }
+    return {center.x, center.y, center.z, h1.x, h1.y, h1.z,
+            h2.x, h2.y, h2.z, h3.x, h3.y, h3.z};
+}
+
+static std::vector<double> regionToBox(const std::vector<double>& region) {
+    if (region.size() < 6)
+        return {};
+
+    constexpr double radToDeg = 180.0 / 3.14159265358979323846;
+    constexpr double metersPerDeg = 40075696.0 / 360.0;
+    const double west = region[0] * radToDeg;
+    const double south = region[1] * radToDeg;
+    const double east = region[2] * radToDeg;
+    const double north = region[3] * radToDeg;
+    const double minHeight = region[4];
+    const double maxHeight = region[5];
+    const double lon = (west + east) * 0.5;
+    const double lat = (south + north) * 0.5;
+    const double height = (minHeight + maxHeight) * 0.5;
+    const Vector3 center = cartesianFromDegrees(lon, lat, height);
+
+    const double latRad = lat / radToDeg;
+    const double lonRad = lon / radToDeg;
+    const double cosLat = std::cos(latRad);
+    const double sinLat = std::sin(latRad);
+    const double cosLon = std::cos(lonRad);
+    const double sinLon = std::sin(lonRad);
+    const Vector3 eastAxis{-sinLon, cosLon, 0.0};
+    const Vector3 northAxis{-sinLat * cosLon, -sinLat * sinLon, cosLat};
+    const Vector3 upAxis{cosLat * cosLon, cosLat * sinLon, sinLat};
+    const double halfEast = std::max(0.0, (east - west) * metersPerDeg * cosLat * 0.5);
+    const double halfNorth = std::max(0.0, (north - south) * metersPerDeg * 0.5);
+    const double halfUp = std::max(1.0, (maxHeight - minHeight) * 0.5);
+    const Vector3 h1{eastAxis.x * halfEast, eastAxis.y * halfEast, eastAxis.z * halfEast};
+    const Vector3 h2{northAxis.x * halfNorth, northAxis.y * halfNorth, northAxis.z * halfNorth};
+    const Vector3 h3{upAxis.x * halfUp, upAxis.y * halfUp, upAxis.z * halfUp};
+    return {center.x, center.y, center.z, h1.x, h1.y, h1.z,
+            h2.x, h2.y, h2.z, h3.x, h3.y, h3.z};
+}
+
 // --- Helpers ---
 
 // Extract a "session=" query parameter from a URL and update the session string.
@@ -388,14 +443,26 @@ void parseNode(const json& node,
     }
 
     bool intersects = false;
-    if (node.contains("boundingVolume") &&
-        node["boundingVolume"].contains("box")) {
-	        std::vector<double> box = node["boundingVolume"]["box"].get<std::vector<double>>();
-	        box = transformBox(box, nodeTransform);
-	        result.box = box;
-	        Sphere sphere = obbToSphere(box);
-        //DUMP(box, sphere.center, sphere.radius);
-        if (regionSphere.intersects(sphere)) intersects = true;
+    if (node.contains("boundingVolume")) {
+        const auto &bv = node["boundingVolume"];
+        std::vector<double> box;
+        if (bv.contains("box")) {
+            box = bv["box"].get<std::vector<double>>();
+            box = transformBox(box, nodeTransform);
+        } else if (bv.contains("sphere")) {
+            box = sphereToBox(bv["sphere"].get<std::vector<double>>(), nodeTransform);
+        } else if (bv.contains("region")) {
+            box = regionToBox(bv["region"].get<std::vector<double>>());
+        }
+
+        if (!box.empty()) {
+            result.box = box;
+            Sphere sphere = obbToSphere(box);
+            if (regionSphere.intersects(sphere))
+                intersects = true;
+        } else {
+            intersects = true;
+        }
     } else {
         intersects = true;
     }
