@@ -20,9 +20,6 @@ std::mutex TileDownloader::cacheMutex;
 #include <curl/curl.h>
 #endif
 
-#include "/home/proller/games/freeminer_p3/src/debug/dump.h"
-
-
 using json = nlohmann::json;
 
 static constexpr auto ROOT_TILESET_CACHE_TTL = std::chrono::hours(1);
@@ -383,11 +380,8 @@ void parseNode(const json& node,
     bool allow_return = true;
     if (node.contains("geometricError")) {
         result.geometricError =  node["geometricError"].get<double>();
-       const int ge_int = int(result.geometricError);
-       //DUMP(result.geometricError, ge_int);
-       //if (ge_int != 2)return;
+       // const int ge_int = int(result.geometricError);
     } else {
-        DUMP("noge");
         //return;
     }
 
@@ -479,14 +473,12 @@ void parseNode(const json& node,
 	                                  nodeTransform);
                     } else {
                         std::cout << "  -> Empty JSON, treating as GLB" << std::endl;
-DUMP(result.url);
                         if (allow_return)
                         glbUrls.emplace_back(result);
                     }
                 } catch (...) {
                     // If it's not valid JSON, treat it as a GLB
                     std::cout << "  -> JSON parse failed, treating as GLB" << std::endl;
-DUMP(result.url);
                     if (allow_return)
                     glbUrls.emplace_back(result);
                 }
@@ -510,13 +502,11 @@ DUMP(result.url);
 	                                  nodeTransform);
                     } else {
                         std::cout << "    -> Empty JSON, treating as GLB" << std::endl;
-DUMP(result.url);
                         if (allow_return)
                         glbUrls.emplace_back(result);
                     }
                 } catch (...) {
                     std::cout << "    -> JSON parse failed, treating as GLB" << std::endl;
-DUMP(result.url);
                     if (allow_return)
                     glbUrls.emplace_back(result);
                 }
@@ -625,7 +615,6 @@ std::vector<TileData> TileDownloader::downloadTiles(double lat,
     std::string session;
     std::vector<TileData> glbUrls;
 
-DUMP(rootUrl);
     auto [rootBytes, rootContentType] = fetchUrl(rootUrl);
     if (rootBytes.empty()) return results;
 
@@ -635,7 +624,6 @@ DUMP(rootUrl);
         // Extract session if present
         if (rootJson.contains("session")) {
             session = rootJson["session"].get<std::string>();
-DUMP(session)            ;
             std::cout << "Extracted session from JSON: " << session << std::endl;
         } else {
             // Fallback: adopt from URL if it ever appears there
