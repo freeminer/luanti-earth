@@ -48,7 +48,7 @@ endif()
 # Source files
 file(GLOB SOURCES "src/*.cpp")
 
-add_library(earth_native SHARED ${SOURCES})
+add_library(earth_native STATIC ${SOURCES})
 
 # Include directories
 target_include_directories(earth_native PRIVATE 
