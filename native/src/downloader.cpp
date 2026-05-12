@@ -654,9 +654,14 @@ std::pair<std::string, std::string> TileDownloader::fetchUrl(
 		stripParam("session");
 		const bool rootTileset = isRootTilesetUrl(cacheUrl);
 		std::hash<std::string> hasher;
-		size_t hashValue = hasher(cacheUrl);
-		cacheFile = cacheDir + "/" + std::to_string(hashValue) + ".bin";
-		typeFile = cacheDir + "/" + std::to_string(hashValue) + ".type";
+		const size_t hashValue = hasher(cacheUrl);
+		const std::string hashName = std::to_string(hashValue);
+		const auto cacheSubdir =
+				std::filesystem::path(cacheDir) /
+				hashName.substr(0, std::min<size_t>(2, hashName.size()));
+		std::filesystem::create_directories(cacheSubdir);
+		cacheFile = (cacheSubdir / (hashName + ".bin")).string();
+		typeFile = (cacheSubdir / (hashName + ".type")).string();
 
 		// Try to load from cache
 			if (std::filesystem::exists(cacheFile)) {
