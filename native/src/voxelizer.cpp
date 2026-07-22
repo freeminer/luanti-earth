@@ -379,7 +379,10 @@ VoxelGrid Voxelizer::voxelize(const TileData &tile, int resolution, double origi
 		const Vec3 local = verticesAreEcef ?
 				ecefDeltaToLocal(world - center) :
 				ecefDeltaToLocal(world) + rotated_tile_box_center;
-		return {local.x + gridCenter, local.y + gridCenter, local.z + gridCenter};
+		// X/Z are relative to the chunk center, but the caller supplies the Y
+		// origin at nodeMinY. Adding gridCenter to Y would therefore raise every
+		// fallback-projected tile by half a mapchunk (40 nodes by default).
+		return {local.x + gridCenter, local.y, local.z + gridCenter};
 	};
 
 	for (auto& t : triangles) {
